@@ -1,5 +1,13 @@
 from pathlib import Path
 import uuid
+import werkzeug
+
+if not hasattr(werkzeug, "__version__"):
+    try:
+        import importlib.metadata
+        werkzeug.__version__ = importlib.metadata.version("werkzeug")
+    except Exception:
+        werkzeug.__version__ = "3.0.0"
 
 from flask import (
     Flask,
@@ -46,7 +54,7 @@ print("\nInitializing inspection service...")
 
 inference_service = InferenceService()
 
-print("✓ Inspection service ready")
+print("[OK] Inspection service ready")
 
 
 # ============================================================
@@ -84,82 +92,36 @@ def health():
 # INSPECTION ENDPOINT
 # ============================================================
 
-@app.post("/api/inspect")
-def inspect_product():
+def process_image_file(image):
+    if not image or not image.filename:
+        return {"success": False, "error": "Image filename is empty."}, 400
+
+    if not allowed_file(image.filename):
+        return {
+            "success": False,
+            "filename": image.filename,
+            "error": (
+                "Unsupported image format. "
+                "Use PNG, JPG, JPEG, or WEBP."
+            ),
+        }, 400
 
     image_path = None
 
     try:
-
-        # ----------------------------------------------------
-        # Validate image
-        # ----------------------------------------------------
-
-        if "image" not in request.files:
-
-            return jsonify({
-                "success": False,
-                "error": (
-                    "No image provided. "
-                    "Use form-data field 'image'."
-                ),
-            }), 400
-
-        image = request.files["image"]
-
-        if not image.filename:
-
-            return jsonify({
-                "success": False,
-                "error": "Image filename is empty.",
-            }), 400
-
-        if not allowed_file(image.filename):
-
-            return jsonify({
-                "success": False,
-                "error": (
-                    "Unsupported image format. "
-                    "Use PNG, JPG, JPEG, or WEBP."
-                ),
-            }), 400
-
-        # ----------------------------------------------------
-        # Save uploaded image
-        # ----------------------------------------------------
-
         extension = (
             image.filename
-            .rsplit(".",1)[-1]
+            .rsplit(".", 1)[-1]
             .lower()
         )
 
-        filename = (
-            f"{uuid.uuid4().hex}.{extension}"
-        )
-
+        filename = f"{uuid.uuid4().hex}.{extension}"
         image_path = UPLOAD_DIR / filename
-
         image.save(image_path)
 
-        print(
-            f"\nUploaded image: {image_path}"
-        )
+        print(f"\nUploaded image: {image_path}")
 
-        # ----------------------------------------------------
-        # Run PatchCore
-        # ----------------------------------------------------
-
-        result = inference_service.inspect(
-            image_path
-        )
-
-        print("\nPatchCore result:")
-        print(result)
-
-        # ----------------------------------------------------
-        # Reasoning
-        # ----------------------------------------------------
+        result = inference_service.inspect(image_path)
 
         reasoning = generate_reasoning(
             status=result["status"],
@@ -167,94 +129,114 @@ def inspect_product():
             defect_type=None,
         )
 
-        # ----------------------------------------------------
-        # Visualization
-        # ----------------------------------------------------
-
-        visualization = result.get(
-            "visualization",
-            None,
-        )
-
-        # ----------------------------------------------------
-        # FINAL RESPONSE
-        # ----------------------------------------------------
+        visualization = result.get("visualization", None)
 
         response = {
             "success": True,
-
+            "filename": image.filename,
             "inspection": {
                 "status": result["status"],
-                "anomaly_detected": (
-                    result["anomaly_detected"]
-                ),
-                "anomaly_score": (
-                    result["anomaly_score"]
-                ),
+                "anomaly_detected": result["anomaly_detected"],
+                "anomaly_score": result["anomaly_score"],
             },
-
             "localization": {
-                "bounding_box": (
-                    result["bounding_box"]
-                ),
-
-                "anomaly_map_size": (
-                    result["anomaly_map_size"]
-                ),
+                "bounding_box": result["bounding_box"],
+                "anomaly_map_size": result["anomaly_map_size"],
             },
-
             "visualization": visualization,
-
             "analysis": {
                 "defect_type": None,
-
-                "reason": (
-                    reasoning["reason"]
-                ),
-
-                "potential_impact": (
-                    reasoning["potential_impact"]
-                ),
-
-                "recommended_action": (
-                    reasoning["recommended_action"]
-                ),
+                "reason": reasoning["reason"],
+                "potential_impact": reasoning["potential_impact"],
+                "recommended_action": reasoning["recommended_action"],
             },
         }
 
-        print("\nFinal API response:")
-        print(response)
-
-        return jsonify(response), 200
+        return response, 200
 
     except Exception as error:
-
         print("\n" + "=" * 60)
         print("INSPECTION ERROR")
         print("=" * 60)
-
         print(error)
 
-        return jsonify({
+        return {
             "success": False,
+            "filename": getattr(image, "filename", "unknown"),
             "error": str(error),
-        }), 500
+        }, 500
 
     finally:
-
-        # ----------------------------------------------------
-        # Remove temporary upload
-        # ----------------------------------------------------
-
-        if image_path is not None:
-
+        if image_path is not None and image_path.exists():
             try:
-
                 image_path.unlink()
-
             except OSError:
-
                 pass
+
+
+# ============================================================
+# INSPECTION ENDPOINTS
+# ============================================================
+
+@app.post("/api/inspect")
+def inspect_product():
+
+    if "image" not in request.files:
+        return jsonify({
+            "success": False,
+            "error": (
+                "No image provided. "
+                "Use form-data field 'image'."
+            ),
+        }), 400
+
+    image = request.files["image"]
+    response, status_code = process_image_file(image)
+    return jsonify(response), status_code
+
+
+@app.post("/api/inspect-batch")
+def inspect_batch():
+
+    uploaded_files = request.files.getlist("images")
+    if not uploaded_files:
+        uploaded_files = request.files.getlist("image")
+
+    if not uploaded_files:
+        return jsonify({
+            "success": False,
+            "error": (
+                "No images provided. "
+                "Use form-data field 'images' or 'image'."
+            ),
+        }), 400
+
+    results = []
+    for file in uploaded_files:
+        if not file or not file.filename:
+            continue
+        data, _ = process_image_file(file)
+        results.append(data)
+
+    total = len(results)
+    passed = sum(
+        1 for r in results
+        if r.get("success") and r.get("inspection", {}).get("status") == "PASS"
+    )
+    failed = sum(
+        1 for r in results
+        if r.get("success") and r.get("inspection", {}).get("status") == "FAIL"
+    )
+    errors = sum(1 for r in results if not r.get("success"))
+
+    return jsonify({
+        "success": True,
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "errors": errors,
+        "results": results,
+    }), 200
 
 
 # ============================================================
