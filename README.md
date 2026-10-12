@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 # 📊 Datasets
 
 This project uses two industrial visual-inspection datasets to cover both **surface defects** and **structural/logical anomalies**.
