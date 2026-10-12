@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 📊 Datasets
 
 This project uses two industrial visual-inspection datasets to cover both **surface defects** and **structural/logical anomalies**.
@@ -90,3 +91,6 @@ Together, these datasets allow the system to address two important aspects of ma
 **MVTec LOCO AD → "Is the product structurally and logically correct?"**
 
 **KolektorSDD2 → "Does the product have a visible surface defect?"**
+=======
+# ds-innovate
+>>>>>>> ds-innovate/main
